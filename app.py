@@ -11,7 +11,7 @@ else:
     st.error("Secrets-এ 'GEMINI_API_KEY' পাওয়া যায়নি।")
     st.stop()
 
-# --- ২. নলেজ বেস তৈরি ---
+# --- ২. ডাটাবেস প্রসেসিং ---
 @st.cache_data(show_spinner=False)
 def get_guideline_paragraphs():
     paragraphs = []
@@ -55,44 +55,44 @@ with st.spinner("গাইডলাইন ডাটাবেস চেক কর
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- ৪. রেসপন্স ফাংশন ---
+# --- ৪. পাওয়ারফুল রেসপন্স ফাংশন ---
 def generate_ai_response(prompt_text):
-    # v1beta এবং v1 এর সবচেয়ে স্থিতিশীল মডেল
-    test_models = ['gemini-1.5-flash', 'gemini-1.5-pro']
-    
-    for model_name in test_models:
+    # এই পদ্ধতিটি সরাসরি মূল মডেলকে টার্গেট করবে
+    try:
+        # gemini-1.5-flash সবচেয়ে বেশি স্থিতিশীল
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(
+            prompt_text,
+            safety_settings={
+                'HATE': 'BLOCK_NONE', 'HARASSMENT': 'BLOCK_NONE',
+                'SEXUAL' : 'BLOCK_NONE', 'DANGEROUS' : 'BLOCK_NONE'
+            }
+        )
+        return response.text
+    except Exception as e:
+        # যদি প্রথমটি কাজ না করে, বিকল্প ট্রাই করবে
         try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(
-                prompt_text,
-                safety_settings={
-                    'HATE': 'BLOCK_NONE', 'HARASSMENT': 'BLOCK_NONE',
-                    'SEXUAL' : 'BLOCK_NONE', 'DANGEROUS' : 'BLOCK_NONE'
-                }
-            )
+            alt_model = genai.GenerativeModel('gemini-pro')
+            response = alt_model.generate_content(prompt_text)
             return response.text
-        except Exception as e:
-            if "404" in str(e):
-                continue
-            return f"Error: {str(e)}"
-    return "কোনো মডেল কানেক্ট করা যাচ্ছে না।"
+        except:
+            return f"Error Detail: {str(e)}"
 
-# চ্যাট হিস্ট্রি দেখানো
+# হিস্ট্রি ডিসপ্লে
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- ৫. চ্যাট ইনপুট (ফিক্সড লাইন ৯১) ---
+# --- ৫. চ্যাট ইনপুট ---
 user_input = st.chat_input("গাইডলাইন সম্পর্কে জিজ্ঞাসা করুন...")
 
 if user_input:
-    # ইউজারের মেসেজ সেভ ও ডিসপ্লে করা
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        # কি-ওয়ার্ড সার্চ
+        # সার্চ লজিক
         search_words = set(re.findall(r'\w+', user_input.lower()))
         scored_p = []
         for p in all_paragraphs:
