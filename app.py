@@ -7,82 +7,75 @@ import time
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
-    st.error("API Key খুঁজে পাওয়া যায়নি!")
+    st.error("API Key খুঁজে পাওয়া যায়নি! অনুগ্রহ করে Streamlit Secrets চেক করুন।")
     st.stop()
 
-# ২. ফাইল আপলোড ফাংশন (পুরো নতুন লজিক)
-def get_working_files():
-    final_files = []
+# ২. ফাইল আপলোড লজিক (যা প্রতিবার ফাইল ভেরিফাই করবে)
+def get_verified_files():
+    verified_files = []
     knowledge_dir = "knowledge"
     
     if not os.path.exists(knowledge_dir):
         return []
 
     try:
-        # আগে দেখি সার্ভারে কোনো ফাইল অলরেডি আছে কি না
-        existing_remote_files = list(genai.list_files())
-        remote_dict = {f.display_name: f for f in existing_remote_files}
+        # বর্তমান সার্ভারে থাকা ফাইলগুলোর তালিকা
+        current_files = list(genai.list_files())
+        remote_file_map = {f.display_name: f for f in current_files}
         
         for f_name in os.listdir(knowledge_dir):
             if f_name.lower().endswith(".pdf"):
                 path = os.path.join(knowledge_dir, f_name)
                 
-                # যদি ফাইল থাকে এবং সেটি ACTIVE থাকে
-                if f_name in remote_dict and remote_dict[f_name].state.name == "ACTIVE":
-                    final_files.append(remote_dict[f_name])
+                # যদি ফাইল সার্ভারে থাকে এবং ACTIVE থাকে
+                if f_name in remote_file_map and remote_file_map[f_name].state.name == "ACTIVE":
+                    verified_files.append(remote_file_map[f_name])
                 else:
                     # নতুন করে আপলোড
-                    uploaded = genai.upload_file(path, display_name=f_name)
-                    # প্রসেসিং শেষ হওয়া পর্যন্ত অপেক্ষা
-                    timeout = 0
-                    while uploaded.state.name == "PROCESSING" and timeout < 30:
-                        time.sleep(2)
-                        uploaded = genai.get_file(uploaded.name)
-                        timeout += 2
-                    if uploaded.state.name == "ACTIVE":
-                        final_files.append(uploaded)
+                    with st.spinner(f"আপলোড হচ্ছে: {f_name}..."):
+                        new_file = genai.upload_file(path, display_name=f_name)
+                        # প্রসেসিং চেক
+                        while new_file.state.name == "PROCESSING":
+                            time.sleep(2)
+                            new_file = genai.get_file(new_file.name)
+                        verified_files.append(new_file)
     except Exception as e:
-        print(f"File sync error: {e}")
+        st.warning("ফাইল ভেরিফিকেশনে সমস্যা হয়েছে।")
     
-    return final_files
+    return verified_files
 
-# ৩. ইন্টারফেস
+# ৩. ইন্টারফেস সেটিংস
 st.set_page_config(page_title="পদক্ষেপ মিত্র", page_icon="🤖")
 st.title("🤖 পদক্ষেপ মিত্র (Official Assistant)")
 
-# সেশন স্ট্যাটাস চেক
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# ৪. মডেল ও চ্যাট সেশন হ্যান্ডলিং (মেইন এরর ফিক্স)
+# ৪. চ্যাট সেশন হ্যান্ডলিং (মেইন এরর ফিক্স)
+# এখানে আমরা @st.cache_resource ব্যবহার করছি না কারণ এটিই মূল সমস্যার কারণ হতে পারে
 if "chat_session" not in st.session_state:
     model = genai.GenerativeModel('gemini-1.5-flash')
+    files = get_verified_files()
     
-    with st.spinner("নলেজ বেস চেক করা হচ্ছে..."):
-        files = get_working_files()
-    
+    # সেশন শুরু করার সময় যদি ফাইল থাকে তবে কনটেক্সটসহ শুরু করবে
     if files:
         try:
-            # ফাইলগুলো পাঠিয়ে চ্যাট শুরু
-            st.session_state.chat_session = model.start_chat(history=[
-                {"role": "user", "parts": ["গাইডলাইন ফাইলগুলো গ্রহণ করো:", *files]},
-                {"role": "model", "parts": ["আমি ফাইলগুলো পেয়েছি এবং পড়েছি। এখন উত্তর দিতে প্রস্তুত।"]}
-            ])
-            st.success("নলেজ বেস সচল হয়েছে!")
-        except Exception:
-            # যদি ফাইল নিয়ে স্টার্ট করতে এরর দেয়, তবে ফাইল ছাড়াই শুরু করবে
+            # প্রথম প্রম্পটেই ফাইলগুলো ইনজেক্ট করা
             st.session_state.chat_session = model.start_chat(history=[])
-            st.warning("ফাইল প্রসেসিং-এ সমস্যা হয়েছে, আমি সাধারণ জ্ঞান থেকে উত্তর দিচ্ছি।")
+            st.session_state.chat_session.send_message(["এই ফাইলগুলো তোমার রেফারেন্স হিসেবে ব্যবহার করো:", *files])
+            st.toast("নলেজ বেস যুক্ত হয়েছে!", icon="✅")
+        except Exception:
+            st.session_state.chat_session = model.start_chat(history=[])
+            st.info("সরাসরি সাধারণ চ্যাট মোডে চালু হয়েছে।")
     else:
         st.session_state.chat_session = model.start_chat(history=[])
-        st.info("কোনো পিডিএফ ফাইল পাওয়া যায়নি।")
 
 # চ্যাট হিস্ট্রি প্রদর্শন
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ইউজার ইনপুট
+# ৫. ইউজার ইনপুট প্রসেসিং
 if prompt := st.chat_input("গাইডলাইন সম্পর্কে প্রশ্ন করুন..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -90,9 +83,17 @@ if prompt := st.chat_input("গাইডলাইন সম্পর্কে �
 
     with st.chat_message("assistant"):
         try:
-            # সরাসরি চ্যাট সেশন থেকে উত্তর নেওয়া
-            response = st.session_state.chat_session.send_message(prompt)
-            st.markdown(response.text)
-            st.session_state.messages.append({"role": "assistant", "content": response.text})
+            # স্ট্রিমিং অন রাখা হয়েছে যাতে কানেকশন ড্রপ হলেও যতটুকু রেসপন্স আসে তা দেখা যায়
+            response = st.session_state.chat_session.send_message(prompt, stream=True)
+            full_res = ""
+            placeholder = st.empty()
+            
+            for chunk in response:
+                full_res += chunk.text
+                placeholder.markdown(full_res + "▌")
+            
+            placeholder.markdown(full_res)
+            st.session_state.messages.append({"role": "assistant", "content": full_res})
         except Exception as e:
-            st.error("দুঃখিত, কানেকশনে সমস্যা হচ্ছে। দয়া করে কিছুক্ষণ পর চেষ্টা করুন।")
+            st.error("দুঃখিত, সংযোগে সমস্যা হয়েছে।")
+            st.info("আপনার API Key-র লিমিট শেষ হতে পারে অথবা ইন্টারনেট সমস্যা হতে পারে।")
