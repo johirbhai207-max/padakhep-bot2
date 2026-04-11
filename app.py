@@ -6,13 +6,12 @@ import re
 
 # --- ১. এপিআই সেটিংস ---
 if "GEMINI_API_KEY" in st.secrets:
-    # এখানে সরাসরি v1beta ভার্সন কনফিগার করার চেষ্টা করা হচ্ছে
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
     st.error("Secrets-এ 'GEMINI_API_KEY' পাওয়া যায়নি।")
     st.stop()
 
-# --- ২. পিডিএফ ডেটা প্রসেসিং ---
+# --- ২. নলেজ বেস তৈরি ---
 @st.cache_data(show_spinner=False)
 def get_guideline_paragraphs():
     paragraphs = []
@@ -29,7 +28,6 @@ def get_guideline_paragraphs():
                             text = page.extract_text()
                             if text:
                                 full_text += text + "\n"
-                        # প্যারাগ্রাফে ভাগ করা
                         raw_parts = full_text.split('\n\n')
                         for p in raw_parts:
                             clean_p = p.strip()
@@ -39,11 +37,11 @@ def get_guideline_paragraphs():
                     continue
     return paragraphs
 
-# --- ৩. ইন্টারফেস ডিজাইন ---
+# --- ৩. ইন্টারফেস ---
 st.set_page_config(page_title="পদক্ষেপ মিত্র", page_icon="🤖")
 
 with st.sidebar:
-    st.title("কট্রোল প্যানেল")
+    st.title("কন্ট্রোল প্যানেল")
     if st.button("মেমোরি পরিষ্কার করুন"):
         st.session_state.messages = []
         st.rerun()
@@ -57,10 +55,10 @@ with st.spinner("গাইডলাইন ডাটাবেস চেক কর
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- ৪. মাল্টি-লেভেল ফলব্যাক চ্যাট ফাংশন ---
+# --- ৪. রেসপন্স ফাংশন ---
 def generate_ai_response(prompt_text):
-    # এই মডেলের নামগুলো v1beta এবং v1 উভয় ভার্সনেই সবচেয়ে বেশি কাজ করে
-    test_models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+    # v1beta এবং v1 এর সবচেয়ে স্থিতিশীল মডেল
+    test_models = ['gemini-1.5-flash', 'gemini-1.5-pro']
     
     for model_name in test_models:
         try:
@@ -74,18 +72,45 @@ def generate_ai_response(prompt_text):
             )
             return response.text
         except Exception as e:
-            # যদি 404 আসে, তবে পরের মডেলে যাবে
             if "404" in str(e):
                 continue
-            else:
-                return f"এপিআই ত্রুটি: {str(e)}"
-    
-    return "দুঃখিত, কোনো সক্রিয় মডেল খুঁজে পাওয়া যায়নি। আপনার এপিআই কী-এর পারমিশন চেক করুন।"
+            return f"Error: {str(e)}"
+    return "কোনো মডেল কানেক্ট করা যাচ্ছে না।"
 
-# আগের মেসেজ দেখানো
+# চ্যাট হিস্ট্রি দেখানো
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- ৫. চ্যাট ইনপুট ও প্রসেসিং ---
-if prompt := st.chat_input("গাইডলাইন
+# --- ৫. চ্যাট ইনপুট (ফিক্সড লাইন ৯১) ---
+user_input = st.chat_input("গাইডলাইন সম্পর্কে জিজ্ঞাসা করুন...")
+
+if user_input:
+    # ইউজারের মেসেজ সেভ ও ডিসপ্লে করা
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    with st.chat_message("assistant"):
+        # কি-ওয়ার্ড সার্চ
+        search_words = set(re.findall(r'\w+', user_input.lower()))
+        scored_p = []
+        for p in all_paragraphs:
+            score = sum(1 for word in search_words if word in p.lower())
+            if score > 0:
+                scored_p.append((score, p))
+        
+        scored_p.sort(key=lambda x: x[0], reverse=True)
+        context = "\n\n".join([item[1] for item in scored_p[:5]])
+
+        final_prompt = (
+            f"তুমি পদক্ষেপ মানবিক উন্নয়ন কেন্দ্রের একজন বিশেষজ্ঞ সহকারী। "
+            f"নিচের তথ্যের ভিত্তিতে উত্তর দাও।\n\n"
+            f"তথ্যসমূহ: {context}\n\n"
+            f"প্রশ্ন: {user_input}"
+        )
+        
+        with st.spinner("পদক্ষেপ মিত্র উত্তর খুঁজছে..."):
+            ai_reply = generate_ai_response(final_prompt)
+            st.markdown(ai_reply)
+            st.session_state.messages.append({"role": "assistant", "content": ai_reply})
