@@ -6,17 +6,7 @@ import time
 # ১. পেজ সেটিংস
 st.set_page_config(page_title="পদক্ষেপ মিত্র", page_icon="🤖", layout="wide")
 
-st.markdown("""
-    <style>
-    .main-title { font-size: 2.8rem; font-weight: 700; text-align: center; color: white; margin-bottom: 0px; }
-    .instruction { text-align: center; color: #B0B0B0; font-size: 1.1rem; margin-bottom: 30px; }
-    section[data-testid="stSidebar"] { background-color: #1E1E1E; }
-    </style>
-    <div class="main-title">🤖 পদক্ষেপ মিত্র (Official Assistant)</div>
-    <div class="instruction">তথ্য খোঁজার আগে বাম পাশের সেকশন থেকে টপিক সিলেক্ট করে নিন</div>
-    """, unsafe_allow_html=True)
-
-# ২. এপিআই কী সেটিংস
+# ২. এপিআই কী সেটিংস ও রোটেশন
 API_KEYS = [
     st.secrets.get("GEMINI_API_KEY_1"),
     st.secrets.get("GEMINI_API_KEY_2"),
@@ -32,8 +22,8 @@ if "key_index" not in st.session_state:
 def configure_key():
     if VALID_KEYS:
         key = VALID_KEYS[st.session_state.key_index % len(VALID_KEYS)]
-        # এখানে সরাসরি এপিআই ভার্সন v1beta মেনশন করে দেওয়া হয়েছে যাতে ৪-৪ এরর না আসে
-        genai.configure(api_key=key, transport='rest') 
+        # transport='rest' যোগ করা হয়েছে কারণ এটি v1beta এরর কাটাতে সাহায্য করে
+        genai.configure(api_key=key, transport='rest')
         return key
     return None
 
@@ -49,7 +39,7 @@ def upload_to_gemini(path):
     except Exception as e:
         return f"ERROR: {str(e)}"
 
-# ৪. সাইডবার - টপিক সিলেকশন
+# ৪. সাইডবার ও ইউজার ইন্টারফেস
 st.sidebar.title("📚 টপিক সিলেকশন")
 knowledge_dir = "knowledge"
 subfolders = [f for f in os.listdir(knowledge_dir) if os.path.isdir(os.path.join(knowledge_dir, f))] if os.path.exists(knowledge_dir) else []
@@ -63,7 +53,7 @@ for m in st.session_state.messages:
         st.markdown(m["content"])
 
 # ৫. মূল চ্যাট লজিক (৪-৪ এরর ফিক্সড ভার্সন)
-if prompt := st.chat_input("আপনার প্রশ্ন লিখুন..."):
+if prompt := st.chat_input("গাইডলাইন সম্পর্কে প্রশ্ন করুন..."):
     if not selected_folders:
         st.warning("আগে টপিক সিলেক্ট করুন।")
     else:
@@ -72,7 +62,7 @@ if prompt := st.chat_input("আপনার প্রশ্ন লিখুন..
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("গাইডলাইন বিশ্লেষণ করছি..."):
+            with st.spinner("বিশ্লেষণ চলছে..."):
                 success = False
                 attempts = 0
                 diag_logs = []
@@ -81,6 +71,7 @@ if prompt := st.chat_input("আপনার প্রশ্ন লিখুন..
                     try:
                         configure_key()
                         
+                        # ফাইল কালেকশন
                         current_files = []
                         for folder in selected_folders:
                             path = os.path.join(knowledge_dir, folder)
@@ -90,9 +81,14 @@ if prompt := st.chat_input("আপনার প্রশ্ন লিখুন..
                                     if isinstance(res, str) and "ERROR" in res: raise Exception(res)
                                     current_files.append(res)
 
-                        # এখানে আমরা জেনারেটিভ মডেলকে সরাসরি কল না করে 
-                        # এভেলেবল মডেলের লিস্ট থেকে ফ্ল্যাশ মডেলটি খুঁজে নিচ্ছি
-                        model_name = "models/gemini-1.5-flash-latest" 
+                        # --- ডাইনামিক মডেল সিলেকশন (মাস্টার ফিক্স) ---
+                        # আপনার এপিআই কী-এর আন্ডারে যতগুলো মডেল আছে তার মধ্যে প্রথম ফ্ল্যাশ মডেলটি খুঁজে নেবে
+                        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                        
+                        # ফ্ল্যাশ মডেল খোঁজা, না পেলে প্রো মডেল ব্যবহার করা
+                        model_name = next((m for m in available_models if 'flash' in m), 
+                                         next((m for m in available_models if 'pro' in m), 
+                                         "models/gemini-1.5-flash"))
                         
                         model = genai.GenerativeModel(model_name=model_name)
                         response = model.generate_content(current_files + [prompt])
@@ -103,20 +99,12 @@ if prompt := st.chat_input("আপনার প্রশ্ন লিখুন..
                             success = True
                     
                     except Exception as e:
-                        # যদি ৪-৪ এরর আসে, তবে 'gemini-pro' দিয়ে শেষ চেষ্টা করবে
-                        try:
-                            model = genai.GenerativeModel(model_name="gemini-pro")
-                            response = model.generate_content(current_files + [prompt])
-                            st.markdown(response.text)
-                            st.session_state.messages.append({"role": "assistant", "content": response.text})
-                            success = True
-                        except:
-                            diag_logs.append(f"Key {st.session_state.key_index+1}: {str(e)}")
-                            st.session_state.key_index += 1
-                            attempts += 1
+                        diag_logs.append(f"Key {st.session_state.key_index+1}: {str(e)}")
+                        st.session_state.key_index += 1
+                        attempts += 1
                 
                 if not success:
                     st.error("❌ উত্তর তৈরি করা যায়নি।")
-                    with st.expander("🛠️ বিস্তারিত এরর"):
+                    with st.expander("🛠️ বিস্তারিত এরর দেখুন"):
                         for log in diag_logs:
                             st.write(log)
