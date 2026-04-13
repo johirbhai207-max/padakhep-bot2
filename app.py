@@ -1,12 +1,15 @@
 import streamlit as st
 import google.generativeai as genai
+from groq import Groq
+from openai import OpenAI
 import os
 import time
+import PyPDF2
 
 # ১. পেজ কনফিগারেশন
 st.set_page_config(page_title="পদক্ষেপ মিত্র", page_icon="🤖", layout="wide")
 
-# ২. টাইটেল এবং স্টাইল (আপনার দেওয়া সফল কোড থেকে নেওয়া)
+# ২. টাইটেল ও স্টাইল (আপনার কাজ করা সফল ভার্সন অনুযায়ী)
 st.markdown("""
     <style>
     .main-title { font-size: 2.8rem; font-weight: 700; text-align: center; color: white; margin-bottom: 0px; }
@@ -16,106 +19,136 @@ st.markdown("""
     <div class="instruction">তথ্য খোঁজার আগে বাম পাশের সেকশন থেকে টপিক সিলেক্ট করে নিন</div>
     """, unsafe_allow_html=True)
 
-# ৩. এপিআই কী সেটিংস ও রোটেশন লজিক
-API_KEYS = [
-    st.secrets.get("GEMINI_API_KEY_1"),
-    st.secrets.get("GEMINI_API_KEY_2"),
-    st.secrets.get("GEMINI_API_KEY_3"),
-    st.secrets.get("GEMINI_API_KEY_4"),
-    st.secrets.get("GEMINI_API_KEY_5")
-]
-VALID_KEYS = [k for k in API_KEYS if k]
+# ৩. এপিআই কী সেটিংস
+GEMINI_KEYS = [st.secrets.get(f"GEMINI_API_KEY_{i}") for i in range(1, 6)]
+GROQ_KEYS = [st.secrets.get(f"GROQ_API_KEY_{i}") for i in range(1, 6)]
+OPENROUTER_KEYS = [st.secrets.get(f"OPENROUTER_API_KEY_{i}") for i in range(1, 6)]
 
-if "key_index" not in st.session_state:
-    st.session_state.key_index = 0
+# কী রোটেশন ট্র্যাকিং
+if "gemini_idx" not in st.session_state: st.session_state.gemini_idx = 0
+if "groq_idx" not in st.session_state: st.session_state.groq_idx = 0
+if "or_idx" not in st.session_state: st.session_state.or_idx = 0
 
-def configure_key():
-    if VALID_KEYS:
-        key = VALID_KEYS[st.session_state.key_index % len(VALID_KEYS)]
-        genai.configure(api_key=key, transport='rest')
-        return key
-    return None
+# পিডিএফ থেকে টেক্সট পড়ার লজিক (Smart Context এর জন্য)
+def get_pdf_text_context(folder_path):
+    all_text = ""
+    if os.path.exists(folder_path):
+        for f in os.listdir(folder_path):
+            if f.lower().endswith(".pdf"):
+                try:
+                    with open(os.path.join(folder_path, f), "rb") as pdf_file:
+                        reader = PyPDF2.PdfReader(pdf_file)
+                        for page in reader.pages:
+                            text = page.extract_text()
+                            if text: all_text += text + "\n"
+                except Exception as e:
+                    print(f"Error reading {f}: {e}")
+    return all_text
 
-# ৪. ফাইল আপলোড লজিক
-def upload_to_gemini(path):
+# ৪. ফাইল আপলোড লজিক (শুধুমাত্র জেমিনির জন্য)
+def upload_to_gemini(path, api_key):
     try:
-        configure_key()
+        genai.configure(api_key=api_key, transport='rest')
         file = genai.upload_file(path)
         while file.state.name == "PROCESSING":
             time.sleep(1)
             file = genai.get_file(file.name)
         return file
-    except Exception as e:
-        return f"ERROR: {str(e)}"
+    except:
+        return None
 
-# ৫. সাইডবার - এখানে পরিবর্তন করা হয়েছে (Single Selection)
+# ৫. সাইডবার - Single Selection
 st.sidebar.title("📚 টপিক সিলেকশন")
 knowledge_dir = "knowledge"
-subfolders = []
-if os.path.exists(knowledge_dir):
-    subfolders = [f for f in os.listdir(knowledge_dir) if os.path.isdir(os.path.join(knowledge_dir, f))]
-
-# multiselect এর বদলে selectbox করা হয়েছে
+subfolders = [f for f in os.listdir(knowledge_dir) if os.path.isdir(os.path.join(knowledge_dir, f))] if os.path.exists(knowledge_dir) else []
 selected_folder = st.sidebar.selectbox("একটি টপিক নির্বাচন করুন:", options=["সিলেক্ট করুন"] + subfolders)
 
-# চ্যাট হিস্ট্রি ম্যানেজমেন্ট
+# চ্যাট হিস্ট্রি
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# চ্যাট মেসেজগুলো রেন্ডার করা
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-# ৬. মূল চ্যাট লজিক (কাঠামো আগের মতোই রাখা হয়েছে)
+# ৬. মূল হাইব্রিড চ্যাট লজিক
 if prompt := st.chat_input("গাইডলাইন সম্পর্কে প্রশ্ন করুন..."):
     if selected_folder == "সিলেক্ট করুন":
         st.warning("⚠️ আগে বাম পাশের সেকশন থেকে একটি টপিক সিলেক্ট করুন।")
     else:
-        # ইউজারের প্রশ্ন দেখানো
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
             with st.spinner("গাইডলাইন বিশ্লেষণ করছি..."):
+                response_text = ""
                 success = False
-                attempts = 0
-                diag_logs = []
+                folder_path = os.path.join(knowledge_dir, selected_folder)
 
-                while not success and attempts < len(VALID_KEYS):
+                # --- ধাপ ১: জেমিনি দিয়ে চেষ্টা (৫টি কী রোটেশন) ---
+                valid_gemini_keys = [k for k in GEMINI_KEYS if k]
+                for _ in range(len(valid_gemini_keys)):
+                    key = valid_gemini_keys[st.session_state.gemini_idx % len(valid_gemini_keys)]
                     try:
-                        configure_key()
-                        
-                        # সিলেক্ট করা ফোল্ডার থেকে ফাইল আপলোড
                         current_files = []
-                        path = os.path.join(knowledge_dir, selected_folder)
-                        if os.path.exists(path):
-                            for f in os.listdir(path):
-                                if f.lower().endswith(".pdf"):
-                                    res = upload_to_gemini(os.path.join(path, f))
-                                    if isinstance(res, str) and "ERROR" in res: raise Exception(res)
-                                    current_files.append(res)
-
-                        # ডাইনামিক মডেল সিলেকশন
-                        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                        model_name = next((m for m in available_models if 'flash' in m), "models/gemini-1.5-flash")
+                        for f in os.listdir(folder_path):
+                            if f.lower().endswith(".pdf"):
+                                res = upload_to_gemini(os.path.join(folder_path, f), key)
+                                if res: current_files.append(res)
                         
-                        model = genai.GenerativeModel(model_name=model_name)
-                        response = model.generate_content(current_files + [prompt])
-                        
-                        if response.text:
-                            st.markdown(response.text)
-                            st.session_state.messages.append({"role": "assistant", "content": response.text})
+                        model = genai.GenerativeModel("gemini-1.5-flash")
+                        resp = model.generate_content(current_files + [prompt])
+                        if resp.text:
+                            response_text = resp.text
                             success = True
-                    
-                    except Exception as e:
-                        diag_logs.append(f"Key {st.session_state.key_index+1}: {str(e)}")
-                        st.session_state.key_index += 1
-                        attempts += 1
-                
+                            break
+                    except:
+                        st.session_state.gemini_idx += 1
+
+                # --- ধাপ ২: জেমিনি ফেইল করলে Groq দিয়ে চেষ্টা (৫টি কী রোটেশন) ---
                 if not success:
-                    st.error("❌ উত্তর তৈরি করা সম্ভব হয়নি। লিমিট শেষ হতে পারে।")
-                    with st.expander("🛠️ বিস্তারিত এরর দেখুন"):
-                        for log in diag_logs:
-                            st.write(log)
+                    pdf_context = get_pdf_text_context(folder_path)
+                    valid_groq_keys = [k for k in GROQ_KEYS if k]
+                    for _ in range(len(valid_groq_keys)):
+                        g_key = valid_groq_keys[st.session_state.groq_idx % len(valid_groq_keys)]
+                        try:
+                            client = Groq(api_key=g_key)
+                            completion = client.chat.completions.create(
+                                model="llama3-70b-8192", # শক্তিশালী মডেল
+                                messages=[
+                                    {"role": "system", "content": f"You are a helpful assistant. Use this context to answer: {pdf_context}"},
+                                    {"role": "user", "content": prompt}
+                                ]
+                            )
+                            response_text = completion.choices[0].message.content + "\n\n*(Answered by Groq Backup)*"
+                            success = True
+                            break
+                        except:
+                            st.session_state.groq_idx += 1
+
+                # --- ধাপ ৩: সবশেষে OpenRouter দিয়ে চেষ্টা (৫টি কী রোটেশন) ---
+                if not success:
+                    valid_or_keys = [k for k in OPENROUTER_KEYS if k]
+                    for _ in range(len(valid_or_keys)):
+                        or_key = valid_or_keys[st.session_state.or_idx % len(valid_or_keys)]
+                        try:
+                            client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=or_key)
+                            completion = client.chat.completions.create(
+                                model="meta-llama/llama-3-8b-instruct:free",
+                                messages=[
+                                    {"role": "system", "content": f"Context: {pdf_context}"},
+                                    {"role": "user", "content": prompt}
+                                ]
+                            )
+                            response_text = completion.choices[0].message.content + "\n\n*(Answered by OpenRouter Backup)*"
+                            success = True
+                            break
+                        except:
+                            st.session_state.or_idx += 1
+
+                if success:
+                    st.markdown(response_text)
+                    st.session_state.messages.append({"role": "assistant", "content": response_text})
+                else:
+                    st.error("❌ সবকটি এপিআই সার্ভিস বর্তমানে ওভারলোডেড। দয়া করে ১০ মিনিট পর চেষ্টা করুন।")
