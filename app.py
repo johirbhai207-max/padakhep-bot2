@@ -3,19 +3,22 @@ import google.generativeai as genai
 import os
 import time
 
-# ১. পেজ সেটিংস ও লুক
+# ১. পেজ কনফিগারেশন ও কাস্টম UI
 st.set_page_config(page_title="পদক্ষেপ মিত্র", page_icon="🤖", layout="wide")
 
 st.markdown("""
     <style>
     .main-title { font-size: 2.8rem; font-weight: 700; text-align: center; color: white; margin-bottom: 0px; }
-    .instruction { text-align: center; color: #B0B0B0; margin-bottom: 30px; }
+    .instruction { text-align: center; color: #B0B0B0; font-size: 1.1rem; margin-bottom: 30px; }
+    .stChatInputContainer { padding-bottom: 20px; }
+    /* সাইডবার স্টাইল */
+    section[data-testid="stSidebar"] { background-color: #1E1E1E; }
     </style>
     <div class="main-title">🤖 পদক্ষেপ মিত্র (Official Assistant)</div>
     <div class="instruction">তথ্য খোঁজার আগে বাম পাশের সেকশন থেকে টপিক সিলেক্ট করে নিন</div>
     """, unsafe_allow_html=True)
 
-# ২. এপিআই কী রোটেশন লজিক
+# ২. এপিআই কী রোটেশন সিস্টেম (৫টি কী এর জন্য)
 API_KEYS = [
     st.secrets.get("GEMINI_API_KEY_1"),
     st.secrets.get("GEMINI_API_KEY_2"),
@@ -23,79 +26,105 @@ API_KEYS = [
     st.secrets.get("GEMINI_API_KEY_4"),
     st.secrets.get("GEMINI_API_KEY_5")
 ]
-API_KEYS = [k for k in API_KEYS if k] # শুধু ভ্যালিড কী গুলো রাখা
+# শুধুমাত্র সচল কী-গুলো ফিল্টার করা
+VALID_KEYS = [k for k in API_KEYS if k]
 
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
-def get_current_key():
-    return API_KEYS[st.session_state.key_index % len(API_KEYS)]
+def configure_with_current_key():
+    if not VALID_KEYS:
+        st.error("কোন API Key পাওয়া যায়নি! Secrets চেক করুন।")
+        st.stop()
+    current_key = VALID_KEYS[st.session_state.key_index % len(VALID_KEYS)]
+    genai.configure(api_key=current_key)
 
-# ৩. ফাইল আপলোড লজিক (একবার আপলোড হলে বারবার করবে না)
-@st.cache_resource
-def upload_file_cached(file_path):
+# ৩. ফাইল আপলোড ফাংশন (Lazy Loading এর জন্য)
+def upload_to_gemini(path):
     try:
-        genai.configure(api_key=get_current_key())
-        file = genai.upload_file(file_path)
+        configure_with_current_key()
+        file = genai.upload_file(path, mime_type="application/pdf")
         while file.state.name == "PROCESSING":
-            time.sleep(2)
+            time.sleep(1)
             file = genai.get_file(file.name)
         return file
     except Exception:
-        # কী লিমিট শেষ হলে পরবর্তী কী দিয়ে ট্রাই করা
+        # বর্তমান কী কাজ না করলে পরের কী ব্যবহার করবে
         st.session_state.key_index += 1
         return None
 
-# ৪. সাইডবার - টপিক সিলেকশন
+# ৪. সাইডবার - টপিক সিলেকশন (এটি শুরুতেই ফাইল লোড করবে না)
 st.sidebar.title("📚 টপিক সিলেকশন")
 knowledge_dir = "knowledge"
-subfolders = [f for f in os.listdir(knowledge_dir) if os.path.isdir(os.path.join(knowledge_dir, f))]
+subfolders = []
+if os.path.exists(knowledge_dir) and os.path.isdir(knowledge_dir):
+    subfolders = [f for f in os.listdir(knowledge_dir) if os.path.isdir(os.path.join(knowledge_dir, f))]
 
 selected_folders = st.sidebar.multiselect(
     "কোন টপিকগুলো থেকে উত্তর খুঁজবেন?",
-    options=subfolders
+    options=subfolders,
+    help="এক বা একাধিক ফোল্ডার সিলেক্ট করুন"
 )
 
-# ৫. চ্যাট সিস্টেম
+# ৫. চ্যাট হিস্ট্রি ম্যানেজমেন্ট
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# আগের মেসেজগুলো স্ক্রিনে দেখানো
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
+# ৬. মূল চ্যাট লজিক (ইউজার প্রশ্ন করলে যা হবে)
 if prompt := st.chat_input("আপনার প্রশ্নটি এখানে লিখুন..."):
     if not selected_folders:
-        st.warning("আগে টপিক সিলেক্ট করুন!")
+        st.warning("⚠️ তথ্য খোঁজার আগে বাম পাশের সেকশন থেকে অন্তত একটি টপিক সিলেক্ট করে নিন।")
     else:
+        # ইউজারের প্রশ্ন সংরক্ষণ ও দেখানো
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("উত্তরের জন্য ফাইলগুলো বিশ্লেষণ করছি..."):
-                files_to_send = []
+            with st.spinner("আপনার সিলেক্ট করা টপিক থেকে ফাইলগুলো বিশ্লেষণ করছি..."):
+                # অন-ডিমান্ড ফাইল প্রসেসিং (Lazy Loading)
+                relevant_files = []
                 for folder in selected_folders:
                     folder_path = os.path.join(knowledge_dir, folder)
-                    for f in os.listdir(folder_path):
-                        if f.endswith(".pdf"):
-                            uploaded = upload_file_cached(os.path.join(folder_path, f))
-                            if uploaded: files_to_send.append(uploaded)
+                    if os.path.exists(folder_path):
+                        for f in os.listdir(folder_path):
+                            if f.lower().endswith(".pdf"):
+                                full_path = os.path.join(folder_path, f)
+                                uploaded = upload_to_gemini(full_path)
+                                if uploaded:
+                                    relevant_files.append(uploaded)
 
-                # রেসপন্স জেনারেট করা
+                # এআই রেসপন্স তৈরির চেষ্টা
                 success = False
                 attempts = 0
-                while not success and attempts < len(API_KEYS):
+                max_attempts = len(VALID_KEYS)
+                
+                while not success and attempts < max_attempts:
                     try:
-                        genai.configure(api_key=get_current_key())
-                        model = genai.GenerativeModel('gemini-1.5-flash')
-                        response = model.generate_content(files_to_send + [prompt])
-                        st.markdown(response.text)
-                        st.session_state.messages.append({"role": "assistant", "content": response.text})
-                        success = True
+                        configure_with_current_key()
+                        # মডেল সেটআপ
+                        model = genai.GenerativeModel(
+                            model_name='gemini-1.5-flash',
+                            system_instruction="তুমি 'পদক্ষেপ মিত্র' এআই অ্যাসিস্ট্যান্ট। তোমার কাজ হলো 'পদক্ষেপ মানবিক উন্নয়ন কেন্দ্র'-এর প্রদত্ত গাইডলাইন অনুযায়ী কর্মীদের প্রশ্নের উত্তর দেওয়া। শুধুমাত্র দেওয়া পিডিএফ ফাইলগুলো থেকে তথ্য ব্যবহার করবে। উত্তর স্পষ্ট এবং বাংলায় হবে।"
+                        )
+                        
+                        # ফাইল ও টেক্সট ইনপুট
+                        response = model.generate_content(relevant_files + [prompt])
+                        
+                        if response.text:
+                            st.markdown(response.text)
+                            st.session_state.messages.append({"role": "assistant", "content": response.text})
+                            success = True
                     except Exception as e:
+                        # এরর আসলে পরের কী-তে সুইচ করা
                         st.session_state.key_index += 1
                         attempts += 1
+                        configure_with_current_key()
                 
                 if not success:
-                    st.error("সবগুলো এপিআই কী-এর লিমিট শেষ। কিছুক্ষণ পর চেষ্টা করুন।")
+                    st.error("❌ সবগুলো এপিআই কী-এর লিমিট শেষ হয়ে গেছে। দয়া করে কিছুক্ষণ পর আবার চেষ্টা করুন।")
