@@ -3,21 +3,17 @@ import google.generativeai as genai
 import os
 import time
 
-# ১. পেজ সেটিংস ও UI
+# ১. পেজ সেটিংস
 st.set_page_config(page_title="পদক্ষেপ মিত্র", page_icon="🤖", layout="wide")
 
-st.markdown("""
-    <style>
-    .main-title { font-size: 2.8rem; font-weight: 700; text-align: center; color: white; margin-bottom: 0px; }
-    .instruction { text-align: center; color: #B0B0B0; font-size: 1.1rem; margin-bottom: 30px; }
-    section[data-testid="stSidebar"] { background-color: #1E1E1E; }
-    </style>
-    <div class="main-title">🤖 পদক্ষেপ মিত্র (Official Assistant)</div>
-    <div class="instruction">তথ্য খোঁজার আগে বাম পাশের সেকশন থেকে টপিক সিলেক্ট করে নিন</div>
-    """, unsafe_allow_html=True)
-
-# ২. এপিআই কী রোটেশন ও স্মার্ট কনফিগারেশন
-API_KEYS = [st.secrets.get(f"GEMINI_API_KEY_{i}") for i in range(1, 6)]
+# ২. এপিআই কী সেটিংস ও রোটেশন
+API_KEYS = [
+    st.secrets.get("GEMINI_API_KEY_1"),
+    st.secrets.get("GEMINI_API_KEY_2"),
+    st.secrets.get("GEMINI_API_KEY_3"),
+    st.secrets.get("GEMINI_API_KEY_4"),
+    st.secrets.get("GEMINI_API_KEY_5")
+]
 VALID_KEYS = [k for k in API_KEYS if k]
 
 if "key_index" not in st.session_state:
@@ -26,32 +22,24 @@ if "key_index" not in st.session_state:
 def configure_key():
     if VALID_KEYS:
         key = VALID_KEYS[st.session_state.key_index % len(VALID_KEYS)]
+        # transport='rest' যোগ করা হয়েছে কারণ এটি v1beta এরর কাটাতে সাহায্য করে
         genai.configure(api_key=key, transport='rest')
         return key
     return None
 
-# ৩. ফাইল আপলোড লজিক (উইথ ক্যাশিং যাতে কোটা বাঁচে)
-@st.cache_resource
-def get_cached_files(selected_folders):
-    uploaded_files = []
-    knowledge_dir = "knowledge"
-    for folder in selected_folders:
-        path = os.path.join(knowledge_dir, folder)
-        if os.path.exists(path):
-            for f in os.listdir(path):
-                if f.lower().endswith(".pdf"):
-                    try:
-                        file_path = os.path.join(path, f)
-                        gen_file = genai.upload_file(file_path)
-                        while gen_file.state.name == "PROCESSING":
-                            time.sleep(2)
-                            gen_file = genai.get_file(gen_file.name)
-                        uploaded_files.append(gen_file)
-                    except:
-                        continue
-    return uploaded_files
+# ৩. ফাইল আপলোড লজিক
+def upload_to_gemini(path):
+    try:
+        configure_key()
+        file = genai.upload_file(path)
+        while file.state.name == "PROCESSING":
+            time.sleep(1)
+            file = genai.get_file(file.name)
+        return file
+    except Exception as e:
+        return f"ERROR: {str(e)}"
 
-# ৪. সাইডবার
+# ৪. সাইডবার ও ইউজার ইন্টারফেস
 st.sidebar.title("📚 টপিক সিলেকশন")
 knowledge_dir = "knowledge"
 subfolders = [f for f in os.listdir(knowledge_dir) if os.path.isdir(os.path.join(knowledge_dir, f))] if os.path.exists(knowledge_dir) else []
@@ -64,7 +52,7 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-# ৫. মূল চ্যাট লজিক (কোটা এরর ফিক্সড)
+# ৫. মূল চ্যাট লজিক (৪-৪ এরর ফিক্সড ভার্সন)
 if prompt := st.chat_input("গাইডলাইন সম্পর্কে প্রশ্ন করুন..."):
     if not selected_folders:
         st.warning("আগে টপিক সিলেক্ট করুন।")
@@ -82,18 +70,28 @@ if prompt := st.chat_input("গাইডলাইন সম্পর্কে �
                 while not success and attempts < len(VALID_KEYS):
                     try:
                         configure_key()
-                        files = get_cached_files(tuple(selected_folders))
                         
-                        # মডেল ডিটেকশন
-                        model_name = "models/gemini-1.5-flash"
-                        try:
-                            models = [m.name for m in genai.list_models()]
-                            if 'models/gemini-1.5-flash' in models: model_name = 'models/gemini-1.5-flash'
-                            elif 'models/gemini-pro' in models: model_name = 'models/gemini-pro'
-                        except: pass
+                        # ফাইল কালেকশন
+                        current_files = []
+                        for folder in selected_folders:
+                            path = os.path.join(knowledge_dir, folder)
+                            for f in os.listdir(path):
+                                if f.lower().endswith(".pdf"):
+                                    res = upload_to_gemini(os.path.join(path, f))
+                                    if isinstance(res, str) and "ERROR" in res: raise Exception(res)
+                                    current_files.append(res)
 
-                        model = genai.GenerativeModel(model_name)
-                        response = model.generate_content(files + [prompt])
+                        # --- ডাইনামিক মডেল সিলেকশন (মাস্টার ফিক্স) ---
+                        # আপনার এপিআই কী-এর আন্ডারে যতগুলো মডেল আছে তার মধ্যে প্রথম ফ্ল্যাশ মডেলটি খুঁজে নেবে
+                        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                        
+                        # ফ্ল্যাশ মডেল খোঁজা, না পেলে প্রো মডেল ব্যবহার করা
+                        model_name = next((m for m in available_models if 'flash' in m), 
+                                         next((m for m in available_models if 'pro' in m), 
+                                         "models/gemini-1.5-flash"))
+                        
+                        model = genai.GenerativeModel(model_name=model_name)
+                        response = model.generate_content(current_files + [prompt])
                         
                         if response.text:
                             st.markdown(response.text)
@@ -101,14 +99,12 @@ if prompt := st.chat_input("গাইডলাইন সম্পর্কে �
                             success = True
                     
                     except Exception as e:
-                        err_msg = str(e)
-                        if "429" in err_msg: # কোটা শেষ হলে পরের কী-তে যাবে
-                            diag_logs.append(f"Key {st.session_state.key_index+1}: লিমিট শেষ (Quota Full)")
-                        else:
-                            diag_logs.append(f"Key {st.session_state.key_index+1}: {err_msg}")
-                        
+                        diag_logs.append(f"Key {st.session_state.key_index+1}: {str(e)}")
                         st.session_state.key_index += 1
                         attempts += 1
                 
                 if not success:
-                    st.error("❌ সব কয়টি এপিআই কী-এর লিমিট এই মুহূর্তের জন্য শেষ। দয়া করে ৫-১০ মিনিট পর চেষ্টা করুন।")
+                    st.error("❌ উত্তর তৈরি করা যায়নি।")
+                    with st.expander("🛠️ বিস্তারিত এরর দেখুন"):
+                        for log in diag_logs:
+                            st.write(log)
