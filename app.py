@@ -10,8 +10,6 @@ st.markdown("""
     <style>
     .main-title { font-size: 2.8rem; font-weight: 700; text-align: center; color: white; margin-bottom: 0px; }
     .instruction { text-align: center; color: #B0B0B0; font-size: 1.1rem; margin-bottom: 30px; }
-    /* চ্যাট কন্টেইনার এবং ইনপুট সেটিংস */
-    .stChatInputContainer { padding-bottom: 20px; }
     section[data-testid="stSidebar"] { background-color: #1E1E1E; }
     </style>
     <div class="main-title">🤖 পদক্ষেপ মিত্র (Official Assistant)</div>
@@ -38,7 +36,7 @@ def configure_next_key():
         return current_key
     return None
 
-# ৩. ফাইল আপলোড ফাংশন (Lazy Loading এর জন্য)
+# ৩. ফাইল আপলোড ফাংশন
 def upload_to_gemini(path):
     try:
         configure_next_key()
@@ -50,34 +48,25 @@ def upload_to_gemini(path):
     except Exception as e:
         return f"ERROR: {str(e)}"
 
-# ৪. সাইডবার - টপিক সিলেকশন (ডাইনামিক ফোল্ডার লোডিং)
+# ৪. সাইডবার - টপিক সিলেকশন
 st.sidebar.title("📚 টপিক সিলেকশন")
 knowledge_dir = "knowledge"
-subfolders = []
-if os.path.exists(knowledge_dir) and os.path.isdir(knowledge_dir):
-    subfolders = [f for f in os.listdir(knowledge_dir) if os.path.isdir(os.path.join(knowledge_dir, f))]
+subfolders = [f for f in os.listdir(knowledge_dir) if os.path.isdir(os.path.join(knowledge_dir, f))] if os.path.exists(knowledge_dir) else []
 
-selected_folders = st.sidebar.multiselect(
-    "কোন টপিকগুলো থেকে উত্তর খুঁজবেন?",
-    options=subfolders,
-    help="এক বা একাধিক ফোল্ডার সিলেক্ট করুন"
-)
+selected_folders = st.sidebar.multiselect("টপিক নির্বাচন করুন:", options=subfolders)
 
-# চ্যাট হিস্ট্রি ম্যানেজমেন্ট
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# আগের মেসেজগুলো স্ক্রিনে রেন্ডার করা
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-# ৫. মূল চ্যাট এবং ডায়াগনস্টিক ট্র্যাকার লজিক
+# ৫. মূল চ্যাট এবং স্মার্ট মডেল কলিং (Fix for 404 Error)
 if prompt := st.chat_input("গাইডলাইন সম্পর্কে প্রশ্ন করুন..."):
     if not selected_folders:
         st.warning("⚠️ তথ্য খোঁজার আগে বাম পাশের সেকশন থেকে অন্তত একটি টপিক সিলেক্ট করে নিন।")
     else:
-        # ইউজারের প্রশ্ন দেখানো
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -87,31 +76,34 @@ if prompt := st.chat_input("গাইডলাইন সম্পর্কে �
                 
                 success = False
                 attempts = 0
-                max_attempts = len(VALID_KEYS)
-                diag_logs = [] # এরর ট্র্যাকিং এর জন্য
+                diag_logs = []
 
-                while not success and attempts < max_attempts:
+                while not success and attempts < len(VALID_KEYS):
                     current_key_num = (st.session_state.key_index % len(VALID_KEYS)) + 1
                     try:
                         configure_next_key()
                         
-                        # শুধুমাত্র সিলেক্ট করা ফোল্ডারের ফাইল আপলোড
                         current_files = []
                         for folder in selected_folders:
                             folder_path = os.path.join(knowledge_dir, folder)
-                            if os.path.exists(folder_path):
-                                for f in os.listdir(folder_path):
-                                    if f.lower().endswith(".pdf"):
-                                        full_path = os.path.join(folder_path, f)
-                                        result = upload_to_gemini(full_path)
-                                        if isinstance(result, str) and "ERROR" in result:
-                                            raise Exception(result)
-                                        current_files.append(result)
+                            for f in os.listdir(folder_path):
+                                if f.lower().endswith(".pdf"):
+                                    res = upload_to_gemini(os.path.join(folder_path, f))
+                                    if isinstance(res, str) and "ERROR" in res: raise Exception(res)
+                                    current_files.append(res)
 
-                        # মডেল কল (আপনার আগের কাজ করা ভার্সন)
-                        model = genai.GenerativeModel('gemini-1.5-flash')
-                        
-                        # ফাইল এবং প্রশ্ন পাঠিয়ে উত্তর তৈরি
+                        # ৪-৪ এরর ফিক্সের জন্য আমরা লিস্ট থেকে নাম চেক করবো
+                        # অনেক সময় ভার্সন সমস্যার কারণে 'models/' যোগ করতে হয়
+                        model_name = 'gemini-1.5-flash'
+                        try:
+                            # আপনার এপিআই ভার্সনে কোন নাম কাজ করবে তা চেক করা
+                            available = [m.name for m in genai.list_models()]
+                            if 'models/gemini-1.5-flash' in available:
+                                model_name = 'models/gemini-1.5-flash'
+                        except:
+                            pass
+
+                        model = genai.GenerativeModel(model_name)
                         response = model.generate_content(current_files + [prompt])
                         
                         if response.text:
@@ -120,14 +112,12 @@ if prompt := st.chat_input("গাইডলাইন সম্পর্কে �
                             success = True
                     
                     except Exception as e:
-                        err_detail = str(e)
-                        diag_logs.append(f"**Key {current_key_num}:** {err_detail}")
-                        st.session_state.key_index += 1 # পরের কী-তে সুইচ
+                        diag_logs.append(f"**Key {current_key_num}:** {str(e)}")
+                        st.session_state.key_index += 1
                         attempts += 1
                 
-                # যদি সব কী ব্যর্থ হয়
                 if not success:
-                    st.error("❌ দুঃখিত, কারিগরি কারণে উত্তর তৈরি করা সম্ভব হয়নি।")
-                    with st.expander("🛠️ ডায়াগনস্টিক ট্র্যাকার (এরর ডিটেইলস দেখুন)"):
+                    st.error("❌ উত্তর তৈরি করা সম্ভব হয়নি।")
+                    with st.expander("🛠️ ডায়াগনস্টিক ট্র্যাকার (এরর ডিটেইলস)"):
                         for log in diag_logs:
                             st.write(log)
