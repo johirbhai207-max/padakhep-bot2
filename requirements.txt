@@ -1,4 +1,3 @@
-groq
-openai
-PyPDF2
+streamlit
 google-generativeai
+pypdf2
