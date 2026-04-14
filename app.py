@@ -36,6 +36,9 @@ API_KEYS = [
 ]
 VALID_KEYS = [k for k in API_KEYS if k]
 
+# মডেল নাম — Gemini 1.5 Flash (free tier: ১৫০০ req/day)
+MODEL_NAME = "models/gemini-1.5-flash"
+
 # ৪. Session State Initialize
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
@@ -131,18 +134,9 @@ def get_or_upload_files(folder_name):
     st.session_state.uploaded_files_cache[folder_name] = uploaded
     return uploaded, True
 
-# ৭. Chat Session তৈরি (আলাদা configure নেই — upload-এর key-ই active থাকবে)
+# ৭. Chat Session তৈরি (gemini-1.5-flash hardcoded)
 def create_chat_session(file_refs):
     try:
-        available_models = [
-            m.name for m in genai.list_models()
-            if 'generateContent' in m.supported_generation_methods
-        ]
-        model_name = next(
-            (m for m in available_models if 'flash' in m),
-            "models/gemini-1.5-flash"
-        )
-
         system_prompt = """আপনি 'পদক্ষেপ মিত্র' - পদক্ষেপ মানবিক উন্নয়ন কেন্দ্রের অফিসিয়াল AI সহকারী।
 আপনার কাজ: প্রদত্ত গাইডলাইন PDF অনুযায়ী কর্মীদের প্রশ্নের সঠিক ও নির্ভুল উত্তর দেওয়া।
 
@@ -153,7 +147,7 @@ def create_chat_session(file_refs):
 - উত্তর সংক্ষিপ্ত কিন্তু সম্পূর্ণ রাখুন"""
 
         model = genai.GenerativeModel(
-            model_name=model_name,
+            model_name=MODEL_NAME,
             system_instruction=system_prompt
         )
 
@@ -197,6 +191,7 @@ if st.sidebar.button("🗑️ Cache পরিষ্কার করুন"):
 # Active key ও cached topic সাইডবারে দেখানো
 st.sidebar.markdown("---")
 st.sidebar.markdown(f"🔑 **Active Key:** {st.session_state.key_index + 1} / {len(VALID_KEYS)}")
+st.sidebar.markdown(f"🤖 **Model:** gemini-1.5-flash")
 
 cached_topics = list(st.session_state.uploaded_files_cache.keys())
 if cached_topics:
