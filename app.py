@@ -36,8 +36,8 @@ API_KEYS = [
 ]
 VALID_KEYS = [k for k in API_KEYS if k]
 
-# মডেল নাম — Gemini 1.5 Flash (free tier: ১৫০০ req/day)
-MODEL_NAME = "models/gemini-1.5-flash"
+# মডেল নাম — transport='rest' ছাড়া v1 endpoint ব্যবহার হবে
+MODEL_NAME = "gemini-1.5-flash"
 
 # ৪. Session State Initialize
 if "key_index" not in st.session_state:
@@ -76,10 +76,10 @@ def mark_key_failed():
     st.session_state.key_index = (st.session_state.key_index + 1) % len(VALID_KEYS)
 
 def configure_api():
-    """নতুন available key দিয়ে API configure করা"""
+    """নতুন available key দিয়ে API configure করা — transport ছাড়া"""
     key = get_available_key()
     if key:
-        genai.configure(api_key=key, transport='rest')
+        genai.configure(api_key=key)  # ✅ transport='rest' সরানো হয়েছে
         return True
     return False
 
@@ -87,7 +87,7 @@ def configure_upload_key():
     """Upload-এ ব্যবহৃত সেই একই key দিয়ে API configure করা"""
     saved_idx = st.session_state.file_upload_key_index
     if saved_idx is not None and saved_idx < len(VALID_KEYS):
-        genai.configure(api_key=VALID_KEYS[saved_idx], transport='rest')
+        genai.configure(api_key=VALID_KEYS[saved_idx])  # ✅ transport='rest' সরানো হয়েছে
         return True
     return False
 
@@ -134,7 +134,7 @@ def get_or_upload_files(folder_name):
     st.session_state.uploaded_files_cache[folder_name] = uploaded
     return uploaded, True
 
-# ৭. Chat Session তৈরি (gemini-1.5-flash hardcoded)
+# ৭. Chat Session তৈরি
 def create_chat_session(file_refs):
     try:
         system_prompt = """আপনি 'পদক্ষেপ মিত্র' - পদক্ষেপ মানবিক উন্নয়ন কেন্দ্রের অফিসিয়াল AI সহকারী।
@@ -191,7 +191,7 @@ if st.sidebar.button("🗑️ Cache পরিষ্কার করুন"):
 # Active key ও cached topic সাইডবারে দেখানো
 st.sidebar.markdown("---")
 st.sidebar.markdown(f"🔑 **Active Key:** {st.session_state.key_index + 1} / {len(VALID_KEYS)}")
-st.sidebar.markdown(f"🤖 **Model:** gemini-1.5-flash")
+st.sidebar.markdown(f"🤖 **Model:** {MODEL_NAME}")
 
 cached_topics = list(st.session_state.uploaded_files_cache.keys())
 if cached_topics:
