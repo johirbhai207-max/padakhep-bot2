@@ -37,7 +37,7 @@ API_KEYS = [
 VALID_KEYS = [k for k in API_KEYS if k]
 
 # মডেল নাম — transport='rest' ছাড়া v1 endpoint ব্যবহার হবে
-MODEL_NAME = "gemini-1.5-flash"
+MODEL_NAME = "models/gemini-1.5-flash-latest"
 
 # ৪. Session State Initialize
 if "key_index" not in st.session_state:
