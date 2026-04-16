@@ -54,12 +54,14 @@ if "current_topic" not in st.session_state:
     st.session_state.current_topic = None
 if "chat_session" not in st.session_state:
     st.session_state.chat_session = None
+if "pdf_sent" not in st.session_state:
+    # ✅ PDF প্রথম প্রশ্নে পাঠানো হয়েছে কিনা track করা
+    st.session_state.pdf_sent = False
 
 # ৫. Smart Key Rotation
 COOLDOWN_MINUTES = 60
 
 def get_available_key():
-    """সময়-ভিত্তিক smart key rotation"""
     now = datetime.now()
     total = len(VALID_KEYS)
     for i in range(total):
@@ -71,12 +73,10 @@ def get_available_key():
     return None
 
 def mark_key_failed():
-    """বর্তমান key-কে failed হিসেবে mark করা"""
     st.session_state.key_fail_times[st.session_state.key_index] = datetime.now()
     st.session_state.key_index = (st.session_state.key_index + 1) % len(VALID_KEYS)
 
 def configure_api():
-    """নতুন available key দিয়ে API configure করা"""
     key = get_available_key()
     if key:
         genai.configure(api_key=key)
@@ -84,20 +84,14 @@ def configure_api():
     return False
 
 def configure_upload_key():
-    """Upload-এ ব্যবহৃত সেই একই key দিয়ে API configure করা"""
     saved_idx = st.session_state.file_upload_key_index
     if saved_idx is not None and saved_idx < len(VALID_KEYS):
         genai.configure(api_key=VALID_KEYS[saved_idx])
         return True
     return False
 
-# ৬. PDF Upload with Caching + Same Key Fix
+# ৬. PDF Upload with Caching
 def get_or_upload_files(folder_name):
-    """
-    Cache থেকে file reference নেয়।
-    Cache না থাকলে upload করে cache-এ রাখে।
-    upload ও chat-এ একই API key ব্যবহার নিশ্চিত করা হয়।
-    """
     if folder_name in st.session_state.uploaded_files_cache:
         configure_upload_key()
         return st.session_state.uploaded_files_cache[folder_name]
@@ -128,12 +122,8 @@ def get_or_upload_files(folder_name):
     st.session_state.uploaded_files_cache[folder_name] = uploaded
     return uploaded
 
-# ৭. Chat Session তৈরি — ✅ এখন exception raise করে, return None করে না
-def create_chat_session(file_refs):
-    """
-    গুরুত্বপূর্ণ পরিবর্তন: আগে error হলে return None করত,
-    এখন exception raise করে যাতে key rotation কাজ করে।
-    """
+# ৭. Chat Session তৈরি — ✅ কোনো initialization message নেই, token খরচ নেই
+def create_chat_session():
     system_prompt = """আপনি 'পদক্ষেপ মিত্র' - পদক্ষেপ মানবিক উন্নয়ন কেন্দ্রের অফিসিয়াল AI সহকারী।
 আপনার কাজ: প্রদত্ত গাইডলাইন PDF অনুযায়ী কর্মীদের প্রশ্নের সঠিক ও নির্ভুল উত্তর দেওয়া।
 
@@ -147,11 +137,8 @@ def create_chat_session(file_refs):
         model_name=MODEL_NAME,
         system_instruction=system_prompt
     )
-
-    chat = model.start_chat(history=[])
-    # ✅ এই line-এ exception হলে সরাসরি caller-এর except block-এ যাবে
-    chat.send_message(file_refs + ["এই গাইডলাইনগুলো মনোযোগ দিয়ে পড়ুন। আমি প্রস্তুত।"])
-    return chat
+    # ✅ শুধু chat object তৈরি, কোনো message পাঠানো হচ্ছে না
+    return model.start_chat(history=[])
 
 # ৮. সাইডবার
 st.sidebar.title("📚 টপিক সিলেকশন")
@@ -168,11 +155,12 @@ selected_folder = st.sidebar.selectbox(
     options=["সিলেক্ট করুন"] + subfolders
 )
 
-# Topic পরিবর্তন হলে chat reset
+# Topic পরিবর্তন হলে সব reset
 if selected_folder != st.session_state.current_topic:
     st.session_state.current_topic = selected_folder
     st.session_state.messages = []
     st.session_state.chat_session = None
+    st.session_state.pdf_sent = False
 
 # Cache clear বাটন
 if st.sidebar.button("🗑️ Cache পরিষ্কার করুন"):
@@ -180,9 +168,10 @@ if st.sidebar.button("🗑️ Cache পরিষ্কার করুন"):
     st.session_state.chat_session = None
     st.session_state.messages = []
     st.session_state.file_upload_key_index = None
+    st.session_state.pdf_sent = False
     st.sidebar.success("✅ Cache পরিষ্কার হয়েছে!")
 
-# Active key ও cached topic সাইডবারে দেখানো
+# Sidebar info
 st.sidebar.markdown("---")
 st.sidebar.markdown(f"🔑 **Active Key:** {st.session_state.key_index + 1} / {len(VALID_KEYS)}")
 st.sidebar.markdown(f"🤖 **Model:** {MODEL_NAME}")
@@ -214,19 +203,27 @@ if prompt := st.chat_input("গাইডলাইন সম্পর্কে �
 
             while not success and attempts < len(VALID_KEYS):
                 try:
-                    # PDF upload (cache থাকলে skip, একই key active হবে)
+                    # PDF upload (cache থাকলে skip)
                     with st.spinner("📄 গাইডলাইন লোড করছি..."):
                         file_refs = get_or_upload_files(selected_folder)
 
-                    # Chat session না থাকলে তৈরি করা
+                    # Chat session না থাকলে তৈরি করা — কোনো token খরচ নেই
                     if st.session_state.chat_session is None:
-                        with st.spinner("🔧 সেশন তৈরি করছি..."):
-                            # ✅ এখন exception raise হলে নিচের except block ধরবে
-                            st.session_state.chat_session = create_chat_session(file_refs)
+                        st.session_state.chat_session = create_chat_session()
+                        st.session_state.pdf_sent = False
 
-                    # প্রশ্ন পাঠানো
+                    # ✅ প্রথম প্রশ্নে PDF সহ পাঠানো, পরের প্রশ্নে শুধু text
                     with st.spinner("💭 উত্তর তৈরি করছি..."):
-                        response = st.session_state.chat_session.send_message(prompt)
+                        if not st.session_state.pdf_sent:
+                            # প্রথম প্রশ্ন — PDF + প্রশ্ন একসাথে
+                            message_content = file_refs + [
+                                f"নিচের গাইডলাইন অনুযায়ী উত্তর দিন:\n\n{prompt}"
+                            ]
+                            response = st.session_state.chat_session.send_message(message_content)
+                            st.session_state.pdf_sent = True
+                        else:
+                            # পরের প্রশ্ন — শুধু text, PDF আর লাগবে না
+                            response = st.session_state.chat_session.send_message(prompt)
 
                     if response.text:
                         st.markdown(response.text)
@@ -240,11 +237,11 @@ if prompt := st.chat_input("গাইডলাইন সম্পর্কে �
                     error_msg = str(e)
                     error_logs.append(f"Key {st.session_state.key_index + 1}: {error_msg}")
 
-                    # ✅ যেকোনো error-এই key rotate করা হচ্ছে
                     mark_key_failed()
                     st.session_state.chat_session = None
                     st.session_state.uploaded_files_cache = {}
                     st.session_state.file_upload_key_index = None
+                    st.session_state.pdf_sent = False
 
                     attempts += 1
 
